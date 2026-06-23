@@ -18,6 +18,7 @@ package jose
 
 import (
 	"crypto/ecdsa"
+	"crypto/mlkem"
 	"crypto/rsa"
 	"errors"
 	"fmt"
@@ -124,6 +125,8 @@ type Recipient struct {
 	// Key must have one of these types:
 	//  - ed25519.PublicKey
 	//  - *ecdsa.PublicKey
+	//  - *mlkem.EncapsulationKey768
+	//  - *mlkem.EncapsulationKey1024
 	//  - *rsa.PublicKey
 	//  - *JSONWebKey
 	//  - JSONWebKey
@@ -204,6 +207,24 @@ func NewEncrypter(enc ContentEncryption, rcpt Recipient, opts *EncrypterOptions)
 		}
 		encrypter.recipients = []recipientKeyInfo{recipientInfo}
 		return encrypter, nil
+	case ML_KEM_768, ML_KEM_1024:
+		// ML-KEM direct mode derives the CEK from recipient-specific encapsulation.
+		keyKEM, err := mlkemEncapsulationKeyForAlgorithm(rcpt.Algorithm, rawKey)
+		if err != nil {
+			return nil, err
+		}
+		encrypter.keyGenerator = mlkemKeyGenerator{
+			size:      encrypter.cipher.keySize(),
+			algID:     string(enc),
+			publicKey: keyKEM,
+		}
+		recipientInfo, _ := newMLKEMRecipient(rcpt.Algorithm, keyKEM)
+		recipientInfo.keyID = keyID
+		if rcpt.KeyID != "" {
+			recipientInfo.keyID = rcpt.KeyID
+		}
+		encrypter.recipients = []recipientKeyInfo{recipientInfo}
+		return encrypter, nil
 	default:
 		// Can just add a standard recipient
 		encrypter.keyGenerator = randomKeyGenerator{
@@ -253,7 +274,7 @@ func (ctx *genericEncrypter) addRecipient(recipient Recipient) (err error) {
 	var recipientInfo recipientKeyInfo
 
 	switch recipient.Algorithm {
-	case DIRECT, ECDH_ES:
+	case DIRECT, ECDH_ES, ML_KEM_768, ML_KEM_1024:
 		return fmt.Errorf("go-jose/go-jose: key algorithm '%s' not supported in multi-recipient mode", recipient.Algorithm)
 	}
 
@@ -284,6 +305,8 @@ func makeJWERecipient(alg KeyAlgorithm, encryptionKey interface{}) (recipientKey
 		return newRSARecipient(alg, encryptionKey)
 	case *ecdsa.PublicKey:
 		return newECDHRecipient(alg, encryptionKey)
+	case *mlkem.EncapsulationKey768, *mlkem.EncapsulationKey1024:
+		return newMLKEMRecipient(alg, encryptionKey)
 	case []byte:
 		return newSymmetricRecipient(alg, encryptionKey)
 	case string:
@@ -311,6 +334,10 @@ func newDecrypter(decryptionKey interface{}) (keyDecrypter, error) {
 		}, nil
 	case *ecdsa.PrivateKey:
 		return &ecDecrypterSigner{
+			privateKey: decryptionKey,
+		}, nil
+	case *mlkem.DecapsulationKey768, *mlkem.DecapsulationKey1024:
+		return &mlkemDecrypter{
 			privateKey: decryptionKey,
 		}, nil
 	case []byte:
@@ -435,6 +462,8 @@ func (ctx *genericEncrypter) Options() EncrypterOptions {
 // The decryptionKey argument must contain a private or symmetric key
 // and must have one of these types:
 //   - *ecdsa.PrivateKey
+//   - *mlkem.DecapsulationKey768
+//   - *mlkem.DecapsulationKey1024
 //   - *rsa.PrivateKey
 //   - *JSONWebKey
 //   - JSONWebKey

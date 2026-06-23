@@ -22,6 +22,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/mlkem"
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -48,6 +49,7 @@ type rawJSONWebKey struct {
 	K   *byteBuffer `json:"k,omitempty"`
 	X   *byteBuffer `json:"x,omitempty"`
 	Y   *byteBuffer `json:"y,omitempty"`
+	Pub *byteBuffer `json:"pub,omitempty"`
 	N   *byteBuffer `json:"n,omitempty"`
 	E   *byteBuffer `json:"e,omitempty"`
 	// -- Following fields are only used for private keys --
@@ -60,6 +62,10 @@ type rawJSONWebKey struct {
 	Dp *byteBuffer `json:"dp,omitempty"`
 	Dq *byteBuffer `json:"dq,omitempty"`
 	Qi *byteBuffer `json:"qi,omitempty"`
+	// AKP private key. Private ML-KEM JWK serialization is not supported yet
+	// because the current JOSE draft private seed format does not match Go's
+	// crypto/mlkem private key import/export format.
+	Priv *byteBuffer `json:"priv,omitempty"`
 	// Certificates
 	X5c       []string `json:"x5c,omitempty"`
 	X5u       string   `json:"x5u,omitempty"`
@@ -76,6 +82,10 @@ type JSONWebKey struct {
 	//  - ed25519.PrivateKey
 	//  - *ecdsa.PublicKey
 	//  - *ecdsa.PrivateKey
+	//  - *mlkem.EncapsulationKey768
+	//  - *mlkem.EncapsulationKey1024
+	//  - *mlkem.DecapsulationKey768
+	//  - *mlkem.DecapsulationKey1024
 	//  - *rsa.PublicKey
 	//  - *rsa.PrivateKey
 	//  - []byte (a symmetric key)
@@ -110,12 +120,18 @@ func (k JSONWebKey) MarshalJSON() ([]byte, error) {
 		raw = fromEdPublicKey(key)
 	case *ecdsa.PublicKey:
 		raw, err = fromEcPublicKey(key)
+	case *mlkem.EncapsulationKey768:
+		raw, err = fromMLKEM768PublicKey(key, k.Algorithm)
+	case *mlkem.EncapsulationKey1024:
+		raw, err = fromMLKEM1024PublicKey(key, k.Algorithm)
 	case *rsa.PublicKey:
 		raw = fromRsaPublicKey(key)
 	case ed25519.PrivateKey:
 		raw, err = fromEdPrivateKey(key)
 	case *ecdsa.PrivateKey:
 		raw, err = fromEcPrivateKey(key)
+	case *mlkem.DecapsulationKey768, *mlkem.DecapsulationKey1024:
+		return nil, errors.New("go-jose/go-jose: ML-KEM private JWK marshal is not supported")
 	case *rsa.PrivateKey:
 		raw, err = fromRsaPrivateKey(key)
 	case []byte:
@@ -256,6 +272,15 @@ func (k *JSONWebKey) UnmarshalJSON(data []byte) (err error) {
 				keyPub = key
 			}
 		}
+	case "AKP":
+		if raw.Priv != nil {
+			return errors.New("go-jose/go-jose: ML-KEM private JWK unmarshal is not supported")
+		}
+		key, err = raw.mlkemPublicKey()
+		if err != nil {
+			return err
+		}
+		keyPub = key
 	case "":
 		// kty MUST be present
 		return fmt.Errorf("go-jose/go-jose: missing json web key type")
@@ -374,6 +399,7 @@ func (s *JSONWebKeySet) Key(kid string) []JSONWebKey {
 const rsaThumbprintTemplate = `{"e":"%s","kty":"RSA","n":"%s"}`
 const ecThumbprintTemplate = `{"crv":"%s","kty":"EC","x":"%s","y":"%s"}`
 const edThumbprintTemplate = `{"crv":"%s","kty":"OKP","x":"%s"}`
+const akpThumbprintTemplate = `{"alg":"%s","kty":"AKP","pub":"%s"}`
 
 func ecThumbprintInput(curve elliptic.Curve, x, y *big.Int) (string, error) {
 	coordLength := curveSize(curve)
@@ -406,6 +432,13 @@ func edThumbprintInput(ed ed25519.PublicKey) (string, error) {
 		newFixedSizeBuffer(ed, 32).base64()), nil
 }
 
+func akpThumbprintInput(alg string, pub []byte) (string, error) {
+	if alg == "" {
+		return "", errors.New("go-jose/go-jose: invalid AKP key, missing alg value")
+	}
+	return fmt.Sprintf(akpThumbprintTemplate, alg, newBuffer(pub).base64()), nil
+}
+
 // Thumbprint computes the JWK Thumbprint of a key using the
 // indicated hash algorithm.
 func (k *JSONWebKey) Thumbprint(hash crypto.Hash) ([]byte, error) {
@@ -418,6 +451,20 @@ func (k *JSONWebKey) Thumbprint(hash crypto.Hash) ([]byte, error) {
 		input, err = ecThumbprintInput(key.Curve, key.X, key.Y)
 	case *ecdsa.PrivateKey:
 		input, err = ecThumbprintInput(key.Curve, key.X, key.Y)
+	case *mlkem.EncapsulationKey768:
+		input, err = akpThumbprintInput(k.Algorithm, key.Bytes())
+	case *mlkem.EncapsulationKey1024:
+		input, err = akpThumbprintInput(k.Algorithm, key.Bytes())
+	case *mlkem.DecapsulationKey768:
+		if key == nil {
+			return nil, fmt.Errorf("go-jose/go-jose: unknown key type '%s'", reflect.TypeOf(key))
+		}
+		input, err = akpThumbprintInput(k.Algorithm, key.EncapsulationKey().Bytes())
+	case *mlkem.DecapsulationKey1024:
+		if key == nil {
+			return nil, fmt.Errorf("go-jose/go-jose: unknown key type '%s'", reflect.TypeOf(key))
+		}
+		input, err = akpThumbprintInput(k.Algorithm, key.EncapsulationKey().Bytes())
 	case *rsa.PublicKey:
 		input, err = rsaThumbprintInput(key.N, key.E)
 	case *rsa.PrivateKey:
@@ -442,7 +489,7 @@ func (k *JSONWebKey) Thumbprint(hash crypto.Hash) ([]byte, error) {
 // IsPublic returns true if the JWK represents a public key (not symmetric, not private).
 func (k *JSONWebKey) IsPublic() bool {
 	switch k.Key.(type) {
-	case *ecdsa.PublicKey, *rsa.PublicKey, ed25519.PublicKey:
+	case *ecdsa.PublicKey, *rsa.PublicKey, ed25519.PublicKey, *mlkem.EncapsulationKey768, *mlkem.EncapsulationKey1024:
 		return true
 	default:
 		return false
@@ -462,6 +509,16 @@ func (k *JSONWebKey) Public() JSONWebKey {
 		ret.Key = key.Public()
 	case ed25519.PrivateKey:
 		ret.Key = key.Public()
+	case *mlkem.DecapsulationKey768:
+		if key == nil {
+			return JSONWebKey{}
+		}
+		ret.Key = key.EncapsulationKey()
+	case *mlkem.DecapsulationKey1024:
+		if key == nil {
+			return JSONWebKey{}
+		}
+		ret.Key = key.EncapsulationKey()
 	default:
 		return JSONWebKey{} // returning invalid key
 	}
@@ -498,6 +555,22 @@ func (k *JSONWebKey) Valid() bool {
 		if len(key) != 64 {
 			return false
 		}
+	case *mlkem.EncapsulationKey768:
+		if key == nil || len(key.Bytes()) != mlkem.EncapsulationKeySize768 {
+			return false
+		}
+	case *mlkem.EncapsulationKey1024:
+		if key == nil || len(key.Bytes()) != mlkem.EncapsulationKeySize1024 {
+			return false
+		}
+	case *mlkem.DecapsulationKey768:
+		if key == nil || len(key.Bytes()) != mlkem.SeedSize {
+			return false
+		}
+	case *mlkem.DecapsulationKey1024:
+		if key == nil || len(key.Bytes()) != mlkem.SeedSize {
+			return false
+		}
 	default:
 		return false
 	}
@@ -521,6 +594,34 @@ func fromEdPublicKey(pub ed25519.PublicKey) *rawJSONWebKey {
 		Crv: "Ed25519",
 		X:   newBuffer(pub),
 	}
+}
+
+func fromMLKEM768PublicKey(pub *mlkem.EncapsulationKey768, alg string) (*rawJSONWebKey, error) {
+	return fromMLKEMPublicKey(pub, alg)
+}
+
+func fromMLKEM1024PublicKey(pub *mlkem.EncapsulationKey1024, alg string) (*rawJSONWebKey, error) {
+	return fromMLKEMPublicKey(pub, alg)
+}
+
+func fromMLKEMPublicKey(pub mlkemEncapsulationKey, alg string) (*rawJSONWebKey, error) {
+	if pub == nil {
+		return nil, errors.New("go-jose/go-jose: invalid AKP key, missing pub value")
+	}
+
+	keyAlg, err := mlkemPublicAlgorithm(alg)
+	if err != nil {
+		return nil, err
+	}
+	if !mlkemAlgorithmMatchesPublicKey(keyAlg, pub) {
+		return nil, errors.New("go-jose/go-jose: invalid AKP key, alg does not match pub value")
+	}
+
+	return &rawJSONWebKey{
+		Kty: "AKP",
+		Alg: alg,
+		Pub: newBuffer(pub.Bytes()),
+	}, nil
 }
 
 func fromRsaPublicKey(pub *rsa.PublicKey) *rawJSONWebKey {
@@ -630,6 +731,26 @@ func (key rawJSONWebKey) edPublicKey() (ed25519.PublicKey, error) {
 	copy(publicKey[0:32], key.X.bytes())
 	rv := ed25519.PublicKey(publicKey)
 	return rv, nil
+}
+
+func (key rawJSONWebKey) mlkemPublicKey() (interface{}, error) {
+	if key.Pub == nil {
+		return nil, errors.New("go-jose/go-jose: invalid AKP key, missing pub value")
+	}
+
+	alg, err := mlkemPublicAlgorithm(key.Alg)
+	if err != nil {
+		return nil, err
+	}
+
+	switch alg {
+	case ML_KEM_768, ML_KEM_768_A192KW:
+		return mlkem.NewEncapsulationKey768(key.Pub.bytes())
+	case ML_KEM_1024, ML_KEM_1024_A256KW:
+		return mlkem.NewEncapsulationKey1024(key.Pub.bytes())
+	default:
+		return nil, ErrUnsupportedAlgorithm
+	}
 }
 
 func (key rawJSONWebKey) rsaPrivateKey() (*rsa.PrivateKey, error) {

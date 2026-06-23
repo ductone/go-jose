@@ -102,6 +102,10 @@ const (
 	ECDH_ES_A128KW     = KeyAlgorithm("ECDH-ES+A128KW")     // ECDH-ES + AES key wrap (128)
 	ECDH_ES_A192KW     = KeyAlgorithm("ECDH-ES+A192KW")     // ECDH-ES + AES key wrap (192)
 	ECDH_ES_A256KW     = KeyAlgorithm("ECDH-ES+A256KW")     // ECDH-ES + AES key wrap (256)
+	ML_KEM_768         = KeyAlgorithm("ML-KEM-768")         // ML-KEM-768
+	ML_KEM_1024        = KeyAlgorithm("ML-KEM-1024")        // ML-KEM-1024
+	ML_KEM_768_A192KW  = KeyAlgorithm("ML-KEM-768+A192KW")  // ML-KEM-768 + AES key wrap (192)
+	ML_KEM_1024_A256KW = KeyAlgorithm("ML-KEM-1024+A256KW") // ML-KEM-1024 + AES key wrap (256)
 	A128GCMKW          = KeyAlgorithm("A128GCMKW")          // AES-GCM key wrap (128)
 	A192GCMKW          = KeyAlgorithm("A192GCMKW")          // AES-GCM key wrap (192)
 	A256GCMKW          = KeyAlgorithm("A256GCMKW")          // AES-GCM key wrap (256)
@@ -160,6 +164,7 @@ const (
 
 	headerAPU = "apu" // *byteBuffer
 	headerAPV = "apv" // *byteBuffer
+	headerEK  = "ek"  // *byteBuffer
 	headerEPK = "epk" // *JSONWebKey
 	headerIV  = "iv"  // *byteBuffer
 	headerTag = "tag" // *byteBuffer
@@ -303,6 +308,11 @@ func (parsed rawHeader) getEPK() (*JSONWebKey, error) {
 		return nil, err
 	}
 	return epk, nil
+}
+
+// getEK extracts parsed "ek" from the raw JSON.
+func (parsed rawHeader) getEK() (*byteBuffer, error) {
+	return parsed.getByteBuffer(headerEK)
 }
 
 // getAPU extracts parsed "apu" from the raw JSON.

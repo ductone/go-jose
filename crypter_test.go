@@ -21,6 +21,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/mlkem"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/hex"
@@ -41,6 +42,8 @@ var ecTestKey384, _ = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 var ecTestKey521, _ = ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 
 var ed25519PublicKey, ed25519PrivateKey, _ = ed25519.GenerateKey(rand.Reader)
+var mlkemTestKey768, _ = mlkem.GenerateKey768()
+var mlkemTestKey1024, _ = mlkem.GenerateKey1024()
 
 func TestCompressionError(t *testing.T) {
 	testKey, _ := hex.DecodeString("0c5433f844097b2e910db9b3638ff824")
@@ -143,7 +146,9 @@ func RoundtripJWE(keyAlg KeyAlgorithm, encAlg ContentEncryption, compressionAlg 
 func TestRoundtripsJWE(t *testing.T) {
 	// Test matrix
 	keyAlgs := []KeyAlgorithm{
-		DIRECT, ECDH_ES, ECDH_ES_A128KW, ECDH_ES_A192KW, ECDH_ES_A256KW, A128KW, A192KW, A256KW,
+		DIRECT, ECDH_ES, ECDH_ES_A128KW, ECDH_ES_A192KW, ECDH_ES_A256KW,
+		ML_KEM_768, ML_KEM_1024, ML_KEM_768_A192KW, ML_KEM_1024_A256KW,
+		A128KW, A192KW, A256KW,
 		RSA1_5, RSA_OAEP, RSA_OAEP_256, A128GCMKW, A192GCMKW, A256GCMKW,
 		PBES2_HS256_A128KW, PBES2_HS384_A192KW, PBES2_HS512_A256KW,
 	}
@@ -182,7 +187,10 @@ func TestRoundtripsJWE(t *testing.T) {
 
 func TestRoundtripsJWECorrupted(t *testing.T) {
 	// Test matrix
-	keyAlgs := []KeyAlgorithm{DIRECT, ECDH_ES, ECDH_ES_A128KW, A128KW, RSA1_5, RSA_OAEP, RSA_OAEP_256, A128GCMKW, PBES2_HS256_A128KW}
+	keyAlgs := []KeyAlgorithm{
+		DIRECT, ECDH_ES, ECDH_ES_A128KW, ML_KEM_768, ML_KEM_768_A192KW,
+		A128KW, RSA1_5, RSA_OAEP, RSA_OAEP_256, A128GCMKW, PBES2_HS256_A128KW,
+	}
 	encAlgs := []ContentEncryption{A128GCM, A192GCM, A256GCM, A128CBC_HS256, A192CBC_HS384, A256CBC_HS512}
 	zipAlgs := []CompressionAlgorithm{NONE, DEFLATE}
 
@@ -281,6 +289,115 @@ func TestRoundtripsJWECorrupted(t *testing.T) {
 	}
 }
 
+func TestMLKEMJWEHeaders(t *testing.T) {
+	encrypter, err := NewEncrypter(A256GCM, Recipient{
+		Algorithm: ML_KEM_768,
+		Key:       mlkemTestKey768.EncapsulationKey(),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	direct, err := encrypter.Encrypt([]byte("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(direct.recipients[0].encryptedKey) != 0 {
+		t.Fatal("ML-KEM direct mode should not produce a JWE Encrypted Key")
+	}
+	if ek, err := direct.protected.getEK(); err != nil || ek == nil || len(ek.bytes()) != mlkem.CiphertextSize768 {
+		t.Fatalf("ML-KEM direct mode produced invalid ek header: ek=%v err=%v", ek, err)
+	}
+	compact, err := direct.CompactSerialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parts := strings.Split(compact, "."); len(parts) != 5 || parts[1] != "" {
+		t.Fatalf("compact ML-KEM direct JWE should have empty encrypted-key part: %q", compact)
+	}
+
+	encrypter, err = NewEncrypter(A256GCM, Recipient{
+		Algorithm: ML_KEM_1024_A256KW,
+		Key:       mlkemTestKey1024.EncapsulationKey(),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wrapped, err := encrypter.Encrypt([]byte("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wrapped.recipients[0].encryptedKey) == 0 {
+		t.Fatal("ML-KEM wrapped mode should produce a JWE Encrypted Key")
+	}
+	if ek, err := wrapped.protected.getEK(); err != nil || ek == nil || len(ek.bytes()) != mlkem.CiphertextSize1024 {
+		t.Fatalf("ML-KEM wrapped mode produced invalid ek header: ek=%v err=%v", ek, err)
+	}
+}
+
+func TestMLKEMMultiRecipient(t *testing.T) {
+	_, err := NewMultiEncrypter(A256GCM, []Recipient{
+		{Algorithm: ML_KEM_768, Key: mlkemTestKey768.EncapsulationKey()},
+	}, nil)
+	if err == nil {
+		t.Fatal("ML-KEM direct mode should not be supported in multi-recipient mode")
+	}
+
+	encrypter, err := NewMultiEncrypter(A256GCM, []Recipient{
+		{Algorithm: ML_KEM_768_A192KW, Key: mlkemTestKey768.EncapsulationKey()},
+		{Algorithm: ML_KEM_1024_A256KW, Key: mlkemTestKey1024.EncapsulationKey()},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	obj, err := encrypter.Encrypt([]byte("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, _, plaintext, err := obj.DecryptMulti(mlkemTestKey1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if index != 1 {
+		t.Fatalf("decrypted with recipient %d, want 1", index)
+	}
+	if string(plaintext) != "hello" {
+		t.Fatalf("got plaintext %q, want hello", plaintext)
+	}
+}
+
+func TestMLKEMDecryptRejectsInvalidHeaders(t *testing.T) {
+	encrypter, err := NewEncrypter(A256GCM, Recipient{
+		Algorithm: ML_KEM_768,
+		Key:       mlkemTestKey768.EncapsulationKey(),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, err := encrypter.Encrypt([]byte("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delete(*obj.protected, headerEK)
+	if _, err := obj.Decrypt(mlkemTestKey768); err != ErrCryptoFailure {
+		t.Fatalf("decrypt without ek: got %v, want ErrCryptoFailure", err)
+	}
+
+	obj, err = encrypter.Encrypt([]byte("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.protected.set(headerAPU, newBuffer([]byte("sender"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := obj.Decrypt(mlkemTestKey768); err != ErrCryptoFailure {
+		t.Fatalf("decrypt with apu: got %v, want ErrCryptoFailure", err)
+	}
+}
+
 func TestEncrypterWithJWKAndKeyIDByReference(t *testing.T) {
 	enc, err := NewEncrypter(A128GCM, Recipient{Algorithm: A128KW, Key: &JSONWebKey{
 		KeyID: "test-id",
@@ -332,7 +449,10 @@ func TestEncrypterWithJWKAndKeyIDByValue(t *testing.T) {
 }
 
 func TestEncrypterWithBrokenRand(t *testing.T) {
-	keyAlgs := []KeyAlgorithm{ECDH_ES_A128KW, A128KW, RSA1_5, RSA_OAEP, RSA_OAEP_256, A128GCMKW, PBES2_HS256_A128KW}
+	keyAlgs := []KeyAlgorithm{
+		ECDH_ES_A128KW, A128KW, RSA1_5, RSA_OAEP, RSA_OAEP_256,
+		A128GCMKW, PBES2_HS256_A128KW,
+	}
 	encAlgs := []ContentEncryption{A128GCM, A192GCM, A256GCM, A128CBC_HS256, A192CBC_HS384, A256CBC_HS512}
 
 	serializer := func(obj *JSONWebEncryption) (string, error) { return obj.CompactSerialize() }
@@ -382,6 +502,16 @@ func TestNewEncrypterErrors(t *testing.T) {
 	_, err = NewEncrypter(A128GCM, Recipient{Algorithm: ECDH_ES, Key: nil}, nil)
 	if err == nil {
 		t.Error("was able to instantiate encrypter with invalid EC key")
+	}
+
+	_, err = NewEncrypter(A128GCM, Recipient{Algorithm: ML_KEM_768, Key: nil}, nil)
+	if err == nil {
+		t.Error("was able to instantiate encrypter with invalid ML-KEM key")
+	}
+
+	_, err = NewEncrypter(A128GCM, Recipient{Algorithm: ML_KEM_768, Key: mlkemTestKey1024.EncapsulationKey()}, nil)
+	if err == nil {
+		t.Error("was able to instantiate encrypter with mismatched ML-KEM key")
 	}
 }
 
@@ -841,6 +971,28 @@ func generateTestKeys(keyAlg KeyAlgorithm, encAlg ContentEncryption) []testKey {
 			{
 				dec: &JSONWebKey{KeyID: "test", Key: ecTestKey256},
 				enc: &JSONWebKey{KeyID: "test", Key: &ecTestKey256.PublicKey},
+			},
+		}
+	case ML_KEM_768, ML_KEM_768_A192KW:
+		return []testKey{
+			{
+				dec: mlkemTestKey768,
+				enc: mlkemTestKey768.EncapsulationKey(),
+			},
+			{
+				dec: &JSONWebKey{KeyID: "test", Key: mlkemTestKey768},
+				enc: &JSONWebKey{KeyID: "test", Algorithm: string(keyAlg), Key: mlkemTestKey768.EncapsulationKey()},
+			},
+		}
+	case ML_KEM_1024, ML_KEM_1024_A256KW:
+		return []testKey{
+			{
+				dec: mlkemTestKey1024,
+				enc: mlkemTestKey1024.EncapsulationKey(),
+			},
+			{
+				dec: &JSONWebKey{KeyID: "test", Key: mlkemTestKey1024},
+				enc: &JSONWebKey{KeyID: "test", Algorithm: string(keyAlg), Key: mlkemTestKey1024.EncapsulationKey()},
 			},
 		}
 	case A128GCMKW, A128KW:

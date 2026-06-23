@@ -57,9 +57,12 @@ standard where possible. The Godoc reference has a list of constants.
 | AES-GCM key wrap       | A128GCMKW, A192GCMKW, A256GCMKW                |
 | ECDH-ES + AES key wrap | ECDH-ES+A128KW, ECDH-ES+A192KW, ECDH-ES+A256KW |
 | ECDH-ES (direct)       | ECDH-ES<sup>1</sup>                            |
+| ML-KEM + AES key wrap  | ML-KEM-768+A192KW, ML-KEM-1024+A256KW<sup>2</sup> |
+| ML-KEM (direct)        | ML-KEM-768, ML-KEM-1024<sup>1,2</sup>          |
 | Direct encryption      | dir<sup>1</sup>                                |
 
 <sup>1. Not supported in multi-recipient mode</sup>
+<sup>2. Experimental draft-pinned support for draft-ietf-jose-pqc-kem-05; ML-KEM-512 is not supported.</sup>
 
 | Signing / MAC     | Algorithm identifier(s) |
 |:------------------|:------------------------|
@@ -67,9 +70,9 @@ standard where possible. The Godoc reference has a list of constants.
 | RSASSA-PSS        | PS256, PS384, PS512     |
 | HMAC              | HS256, HS384, HS512     |
 | ECDSA             | ES256, ES384, ES512     |
-| Ed25519           | EdDSA<sup>2</sup>       |
+| Ed25519           | EdDSA<sup>3</sup>       |
 
-<sup>2. Only available in version 2 of the package</sup>
+<sup>3. Only available in version 2 of the package</sup>
 
 | Content encryption | Algorithm identifier(s)                     |
 |:-------------------|:--------------------------------------------|
@@ -91,10 +94,11 @@ allows attaching a key id.
 |:------------------|--------------------------------------------------------------------------------------------------------------------------------------|
 | RSA               | *[rsa.PublicKey](https://pkg.go.dev/crypto/rsa/#PublicKey), *[rsa.PrivateKey](https://pkg.go.dev/crypto/rsa/#PrivateKey)             |
 | ECDH, ECDSA       | *[ecdsa.PublicKey](https://pkg.go.dev/crypto/ecdsa/#PublicKey), *[ecdsa.PrivateKey](https://pkg.go.dev/crypto/ecdsa/#PrivateKey)     |
-| EdDSA<sup>1</sup> | [ed25519.PublicKey](https://pkg.go.dev/crypto/ed25519#PublicKey), [ed25519.PrivateKey](https://pkg.go.dev/crypto/ed25519#PrivateKey) |
+| ML-KEM<sup>4</sup> | *[mlkem.EncapsulationKey768](https://pkg.go.dev/crypto/mlkem/#EncapsulationKey768), *[mlkem.DecapsulationKey768](https://pkg.go.dev/crypto/mlkem/#DecapsulationKey768), *[mlkem.EncapsulationKey1024](https://pkg.go.dev/crypto/mlkem/#EncapsulationKey1024), *[mlkem.DecapsulationKey1024](https://pkg.go.dev/crypto/mlkem/#DecapsulationKey1024) |
+| EdDSA<sup>3</sup> | [ed25519.PublicKey](https://pkg.go.dev/crypto/ed25519#PublicKey), [ed25519.PrivateKey](https://pkg.go.dev/crypto/ed25519#PrivateKey) |
 | AES, HMAC         | []byte                                                                                                                               |
 
-<sup>1. Only available in version 2 or later of the package</sup>
+<sup>4. Public AKP JWKs are supported. Private ML-KEM JWK serialization is not supported until the draft private seed format is compatible with Go's standard-library ML-KEM API.</sup>
 
 ## Examples
 

@@ -22,12 +22,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/mlkem"
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math/big"
 	"reflect"
 	"strings"
@@ -839,6 +841,117 @@ func TestEd25519Serialization(t *testing.T) {
 	assert.EqualSlice(t,
 		jwk.Key.(ed25519.PrivateKey).Public().(ed25519.PublicKey),
 		jwk2.Key.(ed25519.PrivateKey).Public().(ed25519.PublicKey))
+}
+
+func TestMLKEMJWKPublicSerialization(t *testing.T) {
+	privateKey, err := mlkem.GenerateKey768()
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := privateKey.EncapsulationKey()
+
+	jwk := JSONWebKey{
+		Key:       publicKey,
+		KeyID:     "mlkem-test",
+		Algorithm: string(ML_KEM_768),
+		Use:       "enc",
+	}
+
+	serialized, err := json.Marshal(jwk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(serialized), `"priv"`) {
+		t.Fatalf("public ML-KEM JWK contains priv: %s", serialized)
+	}
+
+	var parsed JSONWebKey
+	if err := json.Unmarshal(serialized, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	parsedPublicKey, ok := parsed.Key.(*mlkem.EncapsulationKey768)
+	if !ok {
+		t.Fatalf("parsed key type %T, want *mlkem.EncapsulationKey768", parsed.Key)
+	}
+	if !bytes.Equal(publicKey.Bytes(), parsedPublicKey.Bytes()) {
+		t.Fatal("ML-KEM public JWK roundtrip changed pub bytes")
+	}
+	if !parsed.IsPublic() || !parsed.Valid() {
+		t.Fatal("ML-KEM public JWK should be public and valid")
+	}
+
+	thumbprint, err := parsed.Thumbprint(crypto.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := fmt.Sprintf(`{"alg":"%s","kty":"AKP","pub":"%s"}`, ML_KEM_768, newBuffer(publicKey.Bytes()).base64())
+	expectedThumbprint := sha256.Sum256([]byte(canonical))
+	if !bytes.Equal(thumbprint, expectedThumbprint[:]) {
+		t.Fatalf("thumbprint mismatch: got %x, want %x", thumbprint, expectedThumbprint)
+	}
+}
+
+func TestMLKEMJWKPrivateUnsupported(t *testing.T) {
+	privateKey, err := mlkem.GenerateKey768()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = json.Marshal(JSONWebKey{
+		Key:       privateKey,
+		Algorithm: string(ML_KEM_768),
+	})
+	if err == nil || !strings.Contains(err.Error(), "ML-KEM private JWK marshal is not supported") {
+		t.Fatalf("marshal private ML-KEM JWK: got %v", err)
+	}
+
+	publicJWK := JSONWebKey{
+		Key:       privateKey.EncapsulationKey(),
+		Algorithm: string(ML_KEM_768),
+	}
+	serializedPublic, err := json.Marshal(publicJWK)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	public := (&JSONWebKey{Key: privateKey, Algorithm: string(ML_KEM_768)}).Public()
+	if !public.IsPublic() || !public.Valid() {
+		t.Fatal("Public() should derive a valid public ML-KEM JWK")
+	}
+	if _, err := json.Marshal(public); err != nil {
+		t.Fatalf("marshal derived public ML-KEM JWK: %v", err)
+	}
+
+	privateSerialized := strings.TrimSuffix(string(serializedPublic), "}") +
+		`,"priv":"` + newBuffer(privateKey.Bytes()).base64() + `"}`
+	var parsed JSONWebKey
+	err = json.Unmarshal([]byte(privateSerialized), &parsed)
+	if err == nil || !strings.Contains(err.Error(), "ML-KEM private JWK unmarshal is not supported") {
+		t.Fatalf("unmarshal private ML-KEM JWK: got %v", err)
+	}
+}
+
+func TestMLKEMJWKInvalid(t *testing.T) {
+	privateKey, err := mlkem.GenerateKey768()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := newBuffer(privateKey.EncapsulationKey().Bytes()).base64()
+
+	for _, input := range []string{
+		fmt.Sprintf(`{"kty":"AKP","pub":"%s"}`, pub),
+		fmt.Sprintf(`{"kty":"AKP","alg":"%s","pub":"%s"}`, ML_KEM_1024, pub),
+	} {
+		var jwk JSONWebKey
+		if err := json.Unmarshal([]byte(input), &jwk); err == nil {
+			t.Fatalf("expected invalid ML-KEM JWK to fail: %s", input)
+		}
+	}
+
+	_, err = (&JSONWebKey{Key: privateKey.EncapsulationKey()}).Thumbprint(crypto.SHA256)
+	if err == nil {
+		t.Fatal("expected AKP thumbprint without alg to fail")
+	}
 }
 
 type fakeOpaqueSigner struct {
