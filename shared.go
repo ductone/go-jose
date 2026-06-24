@@ -125,6 +125,16 @@ const (
 	PS256 = SignatureAlgorithm("PS256") // RSASSA-PSS using SHA256 and MGF1-SHA256
 	PS384 = SignatureAlgorithm("PS384") // RSASSA-PSS using SHA384 and MGF1-SHA384
 	PS512 = SignatureAlgorithm("PS512") // RSASSA-PSS using SHA512 and MGF1-SHA512
+
+	ML_DSA_44 = SignatureAlgorithm("ML-DSA-44") // ML-DSA-44 as described in FIPS 204
+	ML_DSA_65 = SignatureAlgorithm("ML-DSA-65") // ML-DSA-65 as described in FIPS 204
+	ML_DSA_87 = SignatureAlgorithm("ML-DSA-87") // ML-DSA-87 as described in FIPS 204
+
+	ML_DSA_44_ES256   = SignatureAlgorithm("ML-DSA-44-ES256")   // Composite signature with ML-DSA-44 and ECDSA P-256
+	ML_DSA_65_ES256   = SignatureAlgorithm("ML-DSA-65-ES256")   // Composite signature with ML-DSA-65 and ECDSA P-256
+	ML_DSA_87_ES384   = SignatureAlgorithm("ML-DSA-87-ES384")   // Composite signature with ML-DSA-87 and ECDSA P-384
+	ML_DSA_44_Ed25519 = SignatureAlgorithm("ML-DSA-44-Ed25519") // Composite signature with ML-DSA-44 and Ed25519
+	ML_DSA_65_Ed25519 = SignatureAlgorithm("ML-DSA-65-Ed25519") // Composite signature with ML-DSA-65 and Ed25519
 )
 
 // Content encryption algorithms
