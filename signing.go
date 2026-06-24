@@ -210,6 +210,9 @@ func newVerifier(verificationKey interface{}) (payloadVerifier, error) {
 	case OpaqueVerifier:
 		return &opaqueVerifier{verifier: verificationKey}, nil
 	default:
+		if verifier, ok, err := newPQVerifier(verificationKey); ok || err != nil {
+			return verifier, err
+		}
 		return nil, ErrUnsupportedKeyType
 	}
 }
@@ -225,6 +228,10 @@ func (ctx *genericSigner) addRecipient(alg SignatureAlgorithm, signingKey interf
 }
 
 func makeJWSRecipient(alg SignatureAlgorithm, signingKey interface{}) (recipientSigInfo, error) {
+	if isPQSignatureAlgorithm(alg) {
+		return makePQJWSRecipient(alg, signingKey)
+	}
+
 	switch signingKey := signingKey.(type) {
 	case ed25519.PrivateKey:
 		return newEd25519Signer(alg, signingKey)

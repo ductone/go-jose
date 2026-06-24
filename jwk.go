@@ -50,16 +50,18 @@ type rawJSONWebKey struct {
 	Y   *byteBuffer `json:"y,omitempty"`
 	N   *byteBuffer `json:"n,omitempty"`
 	E   *byteBuffer `json:"e,omitempty"`
+	Pub *byteBuffer `json:"pub,omitempty"`
 	// -- Following fields are only used for private keys --
 	// RSA uses D, P and Q, while ECDSA uses only D. Fields Dp, Dq, and Qi are
 	// completely optional. Therefore for RSA/ECDSA, D != nil is a contract that
 	// we have a private key whereas D == nil means we have only a public key.
-	D  *byteBuffer `json:"d,omitempty"`
-	P  *byteBuffer `json:"p,omitempty"`
-	Q  *byteBuffer `json:"q,omitempty"`
-	Dp *byteBuffer `json:"dp,omitempty"`
-	Dq *byteBuffer `json:"dq,omitempty"`
-	Qi *byteBuffer `json:"qi,omitempty"`
+	D    *byteBuffer `json:"d,omitempty"`
+	P    *byteBuffer `json:"p,omitempty"`
+	Q    *byteBuffer `json:"q,omitempty"`
+	Dp   *byteBuffer `json:"dp,omitempty"`
+	Dq   *byteBuffer `json:"dq,omitempty"`
+	Qi   *byteBuffer `json:"qi,omitempty"`
+	Priv *byteBuffer `json:"priv,omitempty"`
 	// Certificates
 	X5c       []string `json:"x5c,omitempty"`
 	X5u       string   `json:"x5u,omitempty"`
@@ -121,7 +123,10 @@ func (k JSONWebKey) MarshalJSON() ([]byte, error) {
 	case []byte:
 		raw, err = fromSymmetricKey(key)
 	default:
-		return nil, fmt.Errorf("go-jose/go-jose: unknown key type '%s'", reflect.TypeOf(key))
+		raw, _, err = marshalAKPKey(k)
+		if raw == nil && err == nil {
+			return nil, fmt.Errorf("go-jose/go-jose: unknown key type '%s'", reflect.TypeOf(key))
+		}
 	}
 
 	if err != nil {
@@ -129,7 +134,9 @@ func (k JSONWebKey) MarshalJSON() ([]byte, error) {
 	}
 
 	raw.Kid = k.KeyID
-	raw.Alg = k.Algorithm
+	if k.Algorithm != "" {
+		raw.Alg = k.Algorithm
+	}
 	raw.Use = k.Use
 
 	for _, cert := range k.Certificates {
@@ -255,6 +262,11 @@ func (k *JSONWebKey) UnmarshalJSON(data []byte) (err error) {
 				}
 				keyPub = key
 			}
+		}
+	case "AKP":
+		key, keyPub, err = parseAKPKey(raw)
+		if err != nil {
+			return err
 		}
 	case "":
 		// kty MUST be present
@@ -427,6 +439,11 @@ func (k *JSONWebKey) Thumbprint(hash crypto.Hash) ([]byte, error) {
 	case OpaqueSigner:
 		return key.Public().Thumbprint(hash)
 	default:
+		if akpInput, ok, akpErr := akpThumbprint(k); ok || akpErr != nil {
+			input = akpInput
+			err = akpErr
+			break
+		}
 		return nil, fmt.Errorf("go-jose/go-jose: unknown key type '%s'", reflect.TypeOf(key))
 	}
 
@@ -445,7 +462,7 @@ func (k *JSONWebKey) IsPublic() bool {
 	case *ecdsa.PublicKey, *rsa.PublicKey, ed25519.PublicKey:
 		return true
 	default:
-		return false
+		return akpIsPublic(k.Key)
 	}
 }
 
@@ -463,6 +480,9 @@ func (k *JSONWebKey) Public() JSONWebKey {
 	case ed25519.PrivateKey:
 		ret.Key = key.Public()
 	default:
+		if pub, ok := akpPublic(*k); ok {
+			return pub
+		}
 		return JSONWebKey{} // returning invalid key
 	}
 	return ret
@@ -499,7 +519,7 @@ func (k *JSONWebKey) Valid() bool {
 			return false
 		}
 	default:
-		return false
+		return akpValid(key)
 	}
 	return true
 }
